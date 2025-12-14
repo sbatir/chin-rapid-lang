@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HSK 3.0 Level 1 Vocabulary Trainer</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- Hanzi Writer for stroke order animations -->
+    <script src="https://cdn.jsdelivr.net/npm/hanzi-writer@3.5/dist/hanzi-writer.min.js"></script>
 </head>
 <body>
     <!-- Profile Selection Screen -->
@@ -69,11 +71,16 @@
                 </div>
             </div>
 
-            <!-- Stroke Order Viewer -->
+            <!-- Stroke Order Viewer using Hanzi Writer -->
             <div id="stroke-order-container" class="stroke-order-container">
-                <h4>Stroke Order</h4>
-                <div id="character-tabs" class="character-tabs"></div>
-                <iframe id="stroke-order-frame" class="stroke-order-frame"></iframe>
+                <div class="stroke-order-header">
+                    <h4>Stroke Order</h4>
+                    <div class="stroke-controls">
+                        <button id="animate-all-btn" class="btn btn-small">▶ Animate All</button>
+                        <button id="quiz-mode-btn" class="btn btn-small">Quiz Mode</button>
+                    </div>
+                </div>
+                <div id="hanzi-writer-container" class="hanzi-writer-container"></div>
             </div>
 
             <!-- Sample Sentences Section -->

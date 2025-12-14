@@ -10,6 +10,10 @@ class HSKTrainer {
         this.isInputMode = false;
         this.apiKey = localStorage.getItem('claude_api_key') || '';
 
+        // Hanzi Writer instances for stroke order visualization
+        this.hanziWriters = [];
+        this.isQuizMode = false;
+
         this.initializeApp();
     }
 
@@ -42,6 +46,10 @@ class HSKTrainer {
         // API Key modal
         document.getElementById('save-api-key-btn').addEventListener('click', () => this.saveApiKey());
         document.getElementById('cancel-api-key-btn').addEventListener('click', () => this.hideApiKeyModal());
+
+        // Hanzi Writer controls
+        document.getElementById('animate-all-btn').addEventListener('click', () => this.animateAllCharacters());
+        document.getElementById('quiz-mode-btn').addEventListener('click', () => this.toggleQuizMode());
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
@@ -412,43 +420,180 @@ class HSKTrainer {
         `;
     }
 
-    // ==================== STROKE ORDER ====================
+    // ==================== STROKE ORDER (Hanzi Writer) ====================
 
     updateStrokeOrder() {
         if (!this.currentCard) return;
 
+        // Clean up previous Hanzi Writer instances
+        this.cleanupHanziWriters();
+
+        const container = document.getElementById('hanzi-writer-container');
+        container.innerHTML = '';
+        container.classList.remove('quiz-active');
+
+        // Reset quiz mode
+        this.isQuizMode = false;
+        document.getElementById('quiz-mode-btn').textContent = 'Quiz Mode';
+
         const characters = this.currentCard.chinese.split('');
-        const tabsContainer = document.getElementById('character-tabs');
-        tabsContainer.innerHTML = '';
 
-        // Create a tab for each character
+        // Create a Hanzi Writer instance for each character
         characters.forEach((char, index) => {
-            const tab = document.createElement('button');
-            tab.className = 'character-tab' + (index === 0 ? ' active' : '');
-            tab.textContent = char;
-            tab.dataset.character = char;
-            tab.addEventListener('click', () => this.selectCharacterTab(char, tab));
-            tabsContainer.appendChild(tab);
-        });
+            // Create wrapper element
+            const wrapper = document.createElement('div');
+            wrapper.className = 'hanzi-char-wrapper';
+            wrapper.id = `hanzi-wrapper-${index}`;
 
-        // Load the first character by default
-        this.loadStrokeOrderForCharacter(characters[0]);
+            // Create the target div for Hanzi Writer
+            const target = document.createElement('div');
+            target.id = `hanzi-target-${index}`;
+            wrapper.appendChild(target);
+
+            // Create label
+            const label = document.createElement('div');
+            label.className = 'hanzi-char-label';
+            label.textContent = `${index + 1}/${characters.length}`;
+            wrapper.appendChild(label);
+
+            container.appendChild(wrapper);
+
+            // Create Hanzi Writer instance
+            try {
+                const writer = HanziWriter.create(`hanzi-target-${index}`, char, {
+                    width: 150,
+                    height: 150,
+                    padding: 5,
+                    showOutline: true,
+                    showCharacter: true,
+                    strokeColor: '#dc2626', // Red stroke color
+                    outlineColor: '#ddd',
+                    drawingColor: '#333',
+                    radicalColor: '#dc2626',
+                    highlightColor: '#dc2626',
+                    strokeAnimationSpeed: 1,
+                    delayBetweenStrokes: 300,
+                    charDataLoader: (char, onComplete) => {
+                        fetch(`https://cdn.jsdelivr.net/npm/hanzi-writer-data@2.0/${char}.json`)
+                            .then(response => {
+                                if (!response.ok) {
+                                    throw new Error('Character not found');
+                                }
+                                return response.json();
+                            })
+                            .then(data => onComplete(data))
+                            .catch(err => {
+                                console.warn(`Could not load character data for: ${char}`, err);
+                                // Show fallback
+                                target.innerHTML = `<div style="width:150px;height:150px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:8px;font-size:4rem;">${char}</div>`;
+                            });
+                    }
+                });
+
+                // Store reference
+                this.hanziWriters.push({ writer, char, index });
+
+                // Click to animate individual character
+                target.addEventListener('click', () => {
+                    if (!this.isQuizMode) {
+                        writer.animateCharacter();
+                    }
+                });
+
+            } catch (err) {
+                console.warn(`Could not create HanziWriter for: ${char}`, err);
+                target.innerHTML = `<div style="width:150px;height:150px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:8px;font-size:4rem;">${char}</div>`;
+            }
+        });
     }
 
-    selectCharacterTab(character, clickedTab) {
-        // Update active tab
-        document.querySelectorAll('.character-tab').forEach(tab => {
-            tab.classList.remove('active');
+    cleanupHanziWriters() {
+        // Clean up previous instances
+        this.hanziWriters.forEach(({ writer }) => {
+            try {
+                writer.cancelQuiz();
+                writer.hideCharacter();
+            } catch (e) {
+                // Ignore cleanup errors
+            }
         });
-        clickedTab.classList.add('active');
-
-        // Load stroke order for selected character
-        this.loadStrokeOrderForCharacter(character);
+        this.hanziWriters = [];
     }
 
-    loadStrokeOrderForCharacter(character) {
-        const strokeOrderUrl = `http://www.strokeorder.info/mandarin.php?q=${encodeURIComponent(character)}`;
-        document.getElementById('stroke-order-frame').src = strokeOrderUrl;
+    animateAllCharacters() {
+        if (this.hanziWriters.length === 0) return;
+
+        // Animate characters sequentially
+        let delay = 0;
+        this.hanziWriters.forEach(({ writer }, index) => {
+            setTimeout(() => {
+                try {
+                    writer.animateCharacter();
+                } catch (e) {
+                    console.warn('Could not animate character', e);
+                }
+            }, delay);
+            delay += 1500; // 1.5 second delay between characters
+        });
+    }
+
+    toggleQuizMode() {
+        if (this.hanziWriters.length === 0) return;
+
+        this.isQuizMode = !this.isQuizMode;
+        const container = document.getElementById('hanzi-writer-container');
+        const btn = document.getElementById('quiz-mode-btn');
+
+        if (this.isQuizMode) {
+            container.classList.add('quiz-active');
+            btn.textContent = 'Exit Quiz';
+            this.startQuiz();
+        } else {
+            container.classList.remove('quiz-active');
+            btn.textContent = 'Quiz Mode';
+            this.hanziWriters.forEach(({ writer }) => {
+                try {
+                    writer.cancelQuiz();
+                    writer.showCharacter();
+                    writer.showOutline();
+                } catch (e) {
+                    // Ignore errors
+                }
+            });
+        }
+    }
+
+    startQuiz() {
+        // Start quiz for the first character, then chain to next
+        this.runQuizForCharacter(0);
+    }
+
+    runQuizForCharacter(index) {
+        if (index >= this.hanziWriters.length || !this.isQuizMode) return;
+
+        const { writer, char } = this.hanziWriters[index];
+
+        // Highlight current character label
+        document.querySelectorAll('.hanzi-char-label').forEach((label, i) => {
+            label.classList.toggle('active', i === index);
+        });
+
+        try {
+            writer.quiz({
+                showHintAfterMisses: 3,
+                highlightOnComplete: true,
+                onComplete: (summaryData) => {
+                    // Move to next character after a short delay
+                    setTimeout(() => {
+                        this.runQuizForCharacter(index + 1);
+                    }, 500);
+                }
+            });
+        } catch (e) {
+            console.warn('Could not start quiz for character', e);
+            // Try next character
+            this.runQuizForCharacter(index + 1);
+        }
     }
 
     // ==================== CLAUDE API INTEGRATION ====================

@@ -376,50 +376,91 @@ main {
     border: 1px solid var(--red);
 }
 
-/* Stroke Order Container */
+/* Stroke Order Container - Hanzi Writer */
 .stroke-order-container {
     background-color: var(--dark-gray);
     border-radius: 12px;
-    padding: 1rem;
+    padding: 1.5rem;
     margin-bottom: 1.5rem;
-    text-align: center;
 }
 
-.character-tabs {
+.stroke-order-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.stroke-order-header h4 {
+    margin: 0;
+}
+
+.stroke-controls {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.hanzi-writer-container {
     display: flex;
     justify-content: center;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
+    gap: 1rem;
     flex-wrap: wrap;
-}
-
-.character-tab {
-    padding: 0.75rem 1.25rem;
-    font-size: 1.75rem;
+    padding: 1rem;
     background-color: var(--medium-gray);
-    border: 2px solid var(--medium-gray);
     border-radius: 8px;
-    color: var(--white);
-    cursor: pointer;
-    transition: all 0.2s ease;
-    min-width: 60px;
+    min-height: 180px;
 }
 
-.character-tab:hover {
-    border-color: var(--red);
+.hanzi-char-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
 }
 
-.character-tab.active {
-    background-color: var(--red);
-    border-color: var(--red);
-}
-
-.stroke-order-frame {
-    width: 100%;
-    height: 200px;
-    border: none;
-    border-radius: 8px;
+.hanzi-char-wrapper svg {
     background-color: var(--white);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hanzi-char-wrapper svg:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+}
+
+.hanzi-char-label {
+    font-size: 0.875rem;
+    color: var(--light-gray);
+}
+
+.hanzi-char-label.active {
+    color: var(--red);
+    font-weight: 600;
+}
+
+/* Quiz mode styles */
+.quiz-active .hanzi-char-wrapper svg {
+    box-shadow: 0 0 0 3px var(--red);
+}
+
+.quiz-result {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    border-radius: 8px;
+    text-align: center;
+    font-weight: 600;
+}
+
+.quiz-result.correct {
+    background-color: rgba(22, 163, 74, 0.2);
+    color: var(--green);
+}
+
+.quiz-result.incorrect {
+    background-color: rgba(220, 38, 38, 0.2);
+    color: var(--red);
 }
 
 /* API Error Message */
