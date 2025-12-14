@@ -614,20 +614,12 @@ class HSKTrainer {
         btn.innerHTML = '<span class="loading"></span> Generating...';
 
         try {
-            const response = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': this.apiKey,
-                    'anthropic-version': '2023-06-01',
-                    'anthropic-dangerous-direct-browser-access': 'true'
-                },
-                body: JSON.stringify({
-                    model: 'claude-3-5-sonnet-20241022',
-                    max_tokens: 1024,
-                    messages: [{
-                        role: 'user',
-                        content: `Generate exactly 3 simple example sentences using the Chinese word "${this.currentCard.chinese}" (${this.currentCard.pinyin}, meaning: ${this.currentCard.english}).
+            const requestBody = {
+                model: 'claude-3-haiku-20240307',
+                max_tokens: 1024,
+                messages: [{
+                    role: 'user',
+                    content: `Generate exactly 3 simple example sentences using the Chinese word "${this.currentCard.chinese}" (${this.currentCard.pinyin}, meaning: ${this.currentCard.english}).
 
 The sentences should be appropriate for HSK 3.0 Level 1 learners (beginner level). Keep vocabulary simple.
 
@@ -645,8 +637,18 @@ Format your response EXACTLY like this (use this exact structure):
 [English translation]
 
 Do not add any other text, explanations, or formatting.`
-                    }]
-                })
+                }]
+            };
+
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': this.apiKey,
+                    'anthropic-version': '2023-06-01',
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify(requestBody)
             });
 
             // Get response text for error details
@@ -656,12 +658,13 @@ Do not add any other text, explanations, or formatting.`
             try {
                 data = JSON.parse(responseText);
             } catch (e) {
-                throw new Error(`Invalid JSON response: ${responseText.substring(0, 200)}`);
+                throw new Error(`Invalid JSON response: ${responseText.substring(0, 300)}`);
             }
 
             if (!response.ok) {
+                const errorType = data.error?.type || 'unknown';
                 const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
-                throw new Error(errorMsg);
+                throw new Error(`${errorType}: ${errorMsg}`);
             }
 
             if (!data.content || !data.content[0] || !data.content[0].text) {
