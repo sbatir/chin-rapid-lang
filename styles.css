@@ -385,12 +385,62 @@ main {
     text-align: center;
 }
 
+.character-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.character-tab {
+    padding: 0.75rem 1.25rem;
+    font-size: 1.75rem;
+    background-color: var(--medium-gray);
+    border: 2px solid var(--medium-gray);
+    border-radius: 8px;
+    color: var(--white);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-width: 60px;
+}
+
+.character-tab:hover {
+    border-color: var(--red);
+}
+
+.character-tab.active {
+    background-color: var(--red);
+    border-color: var(--red);
+}
+
 .stroke-order-frame {
     width: 100%;
     height: 200px;
     border: none;
     border-radius: 8px;
     background-color: var(--white);
+}
+
+/* API Error Message */
+.api-error {
+    background-color: rgba(220, 38, 38, 0.1);
+    border: 1px solid var(--red);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-top: 1rem;
+    text-align: left;
+}
+
+.api-error-title {
+    color: var(--red);
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+
+.api-error-details {
+    font-size: 0.875rem;
+    color: var(--light-gray);
 }
 
 /* Sentences Container */

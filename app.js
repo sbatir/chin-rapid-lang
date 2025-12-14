@@ -417,10 +417,37 @@ class HSKTrainer {
     updateStrokeOrder() {
         if (!this.currentCard) return;
 
-        // Get the first character for stroke order display
-        const character = this.currentCard.chinese.charAt(0);
-        const strokeOrderUrl = `http://www.strokeorder.info/mandarin.php?q=${encodeURIComponent(character)}`;
+        const characters = this.currentCard.chinese.split('');
+        const tabsContainer = document.getElementById('character-tabs');
+        tabsContainer.innerHTML = '';
 
+        // Create a tab for each character
+        characters.forEach((char, index) => {
+            const tab = document.createElement('button');
+            tab.className = 'character-tab' + (index === 0 ? ' active' : '');
+            tab.textContent = char;
+            tab.dataset.character = char;
+            tab.addEventListener('click', () => this.selectCharacterTab(char, tab));
+            tabsContainer.appendChild(tab);
+        });
+
+        // Load the first character by default
+        this.loadStrokeOrderForCharacter(characters[0]);
+    }
+
+    selectCharacterTab(character, clickedTab) {
+        // Update active tab
+        document.querySelectorAll('.character-tab').forEach(tab => {
+            tab.classList.remove('active');
+        });
+        clickedTab.classList.add('active');
+
+        // Load stroke order for selected character
+        this.loadStrokeOrderForCharacter(character);
+    }
+
+    loadStrokeOrderForCharacter(character) {
+        const strokeOrderUrl = `http://www.strokeorder.info/mandarin.php?q=${encodeURIComponent(character)}`;
         document.getElementById('stroke-order-frame').src = strokeOrderUrl;
     }
 
@@ -451,7 +478,7 @@ class HSKTrainer {
                     'anthropic-dangerous-direct-browser-access': 'true'
                 },
                 body: JSON.stringify({
-                    model: 'claude-sonnet-4-20250514',
+                    model: 'claude-3-5-sonnet-20241022',
                     max_tokens: 1024,
                     messages: [{
                         role: 'user',
@@ -477,11 +504,25 @@ Do not add any other text, explanations, or formatting.`
                 })
             });
 
-            if (!response.ok) {
-                throw new Error(`API error: ${response.status}`);
+            // Get response text for error details
+            const responseText = await response.text();
+            let data;
+
+            try {
+                data = JSON.parse(responseText);
+            } catch (e) {
+                throw new Error(`Invalid JSON response: ${responseText.substring(0, 200)}`);
             }
 
-            const data = await response.json();
+            if (!response.ok) {
+                const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
+                throw new Error(errorMsg);
+            }
+
+            if (!data.content || !data.content[0] || !data.content[0].text) {
+                throw new Error('Unexpected API response format');
+            }
+
             const text = data.content[0].text;
 
             // Parse and display sentences
@@ -490,7 +531,33 @@ Do not add any other text, explanations, or formatting.`
 
         } catch (error) {
             console.error('Error generating sentences:', error);
-            content.innerHTML = `<p style="color: var(--red);">Error generating sentences. Please check your API key and try again.</p>`;
+
+            let errorHtml = `<div class="api-error">
+                <div class="api-error-title">Error generating sentences</div>
+                <div class="api-error-details">`;
+
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                errorHtml += `<p><strong>CORS Error:</strong> Browser security is blocking the API request.</p>
+                <p>To use this feature, you need to:</p>
+                <ol style="margin-left: 1.5rem; margin-top: 0.5rem;">
+                    <li>Enable browser access on your API key at <a href="https://console.anthropic.com/" target="_blank" style="color: var(--red);">console.anthropic.com</a></li>
+                    <li>Or run this app through a local server with a backend proxy</li>
+                </ol>`;
+            } else if (error.message.includes('401') || error.message.includes('authentication')) {
+                errorHtml += `<p><strong>Authentication Error:</strong> Your API key appears to be invalid.</p>
+                <p>Please check that you've entered the correct API key.</p>`;
+            } else if (error.message.includes('403')) {
+                errorHtml += `<p><strong>Access Denied:</strong> Your API key doesn't have browser access enabled.</p>
+                <p>Go to <a href="https://console.anthropic.com/" target="_blank" style="color: var(--red);">console.anthropic.com</a> and enable "Allow browser access" for your API key.</p>`;
+            } else if (error.message.includes('429')) {
+                errorHtml += `<p><strong>Rate Limited:</strong> Too many requests. Please wait a moment and try again.</p>`;
+            } else {
+                errorHtml += `<p>${error.message}</p>`;
+            }
+
+            errorHtml += `</div></div>`;
+
+            content.innerHTML = errorHtml;
             container.classList.remove('hidden');
         } finally {
             btn.disabled = false;
