@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HSK 3.0 Level 1 Vocabulary Trainer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Profile Selection Screen -->
+    <div id="profile-screen" class="screen active">
+        <div class="container">
+            <h1>HSK 3.0 <span class="highlight">Level 1</span></h1>
+            <h2>Vocabulary Trainer</h2>
+
+            <div class="profile-section">
+                <h3>Select or Create Profile</h3>
+                <div id="profile-list" class="profile-list"></div>
+
+                <div class="new-profile">
+                    <input type="text" id="new-profile-name" placeholder="Enter new profile name" maxlength="20">
+                    <button id="create-profile-btn" class="btn btn-primary">Create Profile</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Learning Screen -->
+    <div id="learning-screen" class="screen">
+        <header>
+            <div class="header-left">
+                <span id="current-user"></span>
+                <button id="logout-btn" class="btn btn-small">Switch Profile</button>
+            </div>
+            <div class="header-center">
+                <h1>HSK 3.0 <span class="highlight">L1</span></h1>
+            </div>
+            <div class="header-right">
+                <div class="stats">
+                    <span>Learned: <strong id="learned-count">0</strong></span>
+                    <span>Due: <strong id="due-count">0</strong></span>
+                    <span>Total: <strong id="total-count">0</strong></span>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <!-- Card Container -->
+            <div id="card-container" class="card-container">
+                <div id="flashcard" class="flashcard">
+                    <div class="card-front">
+                        <div id="card-character" class="card-character"></div>
+                        <div id="card-pinyin" class="card-pinyin hidden"></div>
+                        <p class="card-hint">Click the character to reveal meaning</p>
+                    </div>
+                    <div class="card-back">
+                        <div id="card-english" class="card-english"></div>
+                        <div id="card-pinyin-back" class="card-pinyin"></div>
+                        <div id="card-chinese-back" class="card-chinese-small"></div>
+                    </div>
+                </div>
+
+                <!-- Input Mode (English to Mandarin) -->
+                <div id="input-container" class="input-container hidden">
+                    <div id="english-prompt" class="english-prompt"></div>
+                    <input type="text" id="mandarin-input" class="mandarin-input" placeholder="Type in Mandarin...">
+                    <button id="check-answer-btn" class="btn btn-primary">Check Answer</button>
+                    <div id="answer-feedback" class="answer-feedback hidden"></div>
+                </div>
+            </div>
+
+            <!-- Stroke Order Viewer -->
+            <div id="stroke-order-container" class="stroke-order-container">
+                <h4>Stroke Order</h4>
+                <iframe id="stroke-order-frame" class="stroke-order-frame"></iframe>
+            </div>
+
+            <!-- Sample Sentences Section -->
+            <div id="sentences-container" class="sentences-container hidden">
+                <h4>Sample Sentences</h4>
+                <div id="sentences-content" class="sentences-content"></div>
+            </div>
+            <button id="generate-sentences-btn" class="btn btn-secondary">Generate Sample Sentences</button>
+
+            <!-- Action Buttons -->
+            <div class="action-buttons">
+                <button id="no-btn" class="btn btn-no">✗ No</button>
+                <button id="yes-btn" class="btn btn-yes">✓ Yes</button>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="progress-container">
+                <div class="progress-bar">
+                    <div id="progress-fill" class="progress-fill"></div>
+                </div>
+                <span id="progress-text">0% Complete</span>
+            </div>
+        </main>
+
+        <!-- API Key Modal -->
+        <div id="api-key-modal" class="modal hidden">
+            <div class="modal-content">
+                <h3>Enter Claude API Key</h3>
+                <p>To generate sample sentences, please enter your Anthropic API key:</p>
+                <input type="password" id="api-key-input" placeholder="sk-ant-...">
+                <div class="modal-buttons">
+                    <button id="save-api-key-btn" class="btn btn-primary">Save</button>
+                    <button id="cancel-api-key-btn" class="btn btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Statistics Screen -->
+    <div id="stats-screen" class="screen">
+        <div class="container">
+            <h2>Your Progress</h2>
+            <div id="stats-details" class="stats-details"></div>
+            <button id="back-to-learning-btn" class="btn btn-primary">Back to Learning</button>
+        </div>
+    </div>
+
+    <script src="vocabulary.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
