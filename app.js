@@ -1,28 +1,167 @@
 // HSK 3.0 Level 1 Vocabulary Trainer - Main Application
-// Implements user profiles, 2357 spaced repetition, and Claude API integration
+// Implements IndexedDB storage, enhanced spaced repetition, and Claude API integration
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                           API KEY CONFIGURATION                               ║
+// ║                                                                              ║
+// ║  The API key is stored in localStorage under 'claude_api_key'                ║
+// ║  It is used in the generateSentences() method (line ~700)                    ║
+// ║                                                                              ║
+// ║  To set your API key programmatically:                                       ║
+// ║    localStorage.setItem('claude_api_key', 'your-api-key-here');              ║
+// ║                                                                              ║
+// ║  Or use the in-app modal when clicking "Generate Sample Sentences"          ║
+// ║                                                                              ║
+// ║  IMPORTANT: Your API key must have browser access enabled at:                ║
+// ║  https://console.anthropic.com/settings/keys                                 ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+class HSKDatabase {
+    constructor() {
+        this.dbName = 'HSKTrainerDB';
+        this.dbVersion = 1;
+        this.db = null;
+    }
+
+    async init() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.dbName, this.dbVersion);
+
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                this.db = request.result;
+                resolve(this.db);
+            };
+
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+
+                // Profiles store
+                if (!db.objectStoreNames.contains('profiles')) {
+                    const profileStore = db.createObjectStore('profiles', { keyPath: 'name' });
+                    profileStore.createIndex('createdAt', 'createdAt', { unique: false });
+                }
+
+                // Word progress store (per profile)
+                if (!db.objectStoreNames.contains('wordProgress')) {
+                    const progressStore = db.createObjectStore('wordProgress', { keyPath: ['profileName', 'wordId'] });
+                    progressStore.createIndex('profileName', 'profileName', { unique: false });
+                    progressStore.createIndex('nextReview', 'nextReview', { unique: false });
+                    progressStore.createIndex('level', 'level', { unique: false });
+                    progressStore.createIndex('successRate', 'successRate', { unique: false });
+                }
+
+                // Daily study log
+                if (!db.objectStoreNames.contains('dailyLog')) {
+                    const logStore = db.createObjectStore('dailyLog', { keyPath: ['profileName', 'date'] });
+                    logStore.createIndex('profileName', 'profileName', { unique: false });
+                }
+
+                // Settings store
+                if (!db.objectStoreNames.contains('settings')) {
+                    db.createObjectStore('settings', { keyPath: 'key' });
+                }
+            };
+        });
+    }
+
+    async getAll(storeName) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(storeName, 'readonly');
+            const store = transaction.objectStore(storeName);
+            const request = store.getAll();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async get(storeName, key) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(storeName, 'readonly');
+            const store = transaction.objectStore(storeName);
+            const request = store.get(key);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async put(storeName, data) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(storeName, 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.put(data);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async delete(storeName, key) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(storeName, 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.delete(key);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async getByIndex(storeName, indexName, value) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(storeName, 'readonly');
+            const store = transaction.objectStore(storeName);
+            const index = store.index(indexName);
+            const request = index.getAll(value);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+}
 
 class HSKTrainer {
     constructor() {
         this.vocabulary = HSK_VOCABULARY;
+        this.db = new HSKDatabase();
         this.currentProfile = null;
         this.currentCard = null;
         this.isCardFlipped = false;
         this.isInputMode = false;
+
+        // ════════════════════════════════════════════════════════════════
+        // API KEY LOCATION: Stored in localStorage, key name: 'claude_api_key'
+        // To change: localStorage.setItem('claude_api_key', 'your-key')
+        // ════════════════════════════════════════════════════════════════
         this.apiKey = localStorage.getItem('claude_api_key') || '';
 
-        // Hanzi Writer instances for stroke order visualization
+        // Hanzi Writer instances
         this.hanziWriters = [];
         this.isQuizMode = false;
+
+        // Daily limits
+        this.NEW_CARDS_PER_DAY = 10;
+        this.REVIEW_CARDS_PER_DAY = 50;
+
+        // Word progress cache for current profile
+        this.wordProgressCache = new Map();
 
         this.initializeApp();
     }
 
     // ==================== INITIALIZATION ====================
 
-    initializeApp() {
-        this.loadProfiles();
-        this.renderProfileList();
-        this.attachEventListeners();
+    async initializeApp() {
+        try {
+            await this.db.init();
+            await this.loadProfiles();
+            this.renderProfileList();
+            this.attachEventListeners();
+        } catch (error) {
+            console.error('Failed to initialize database:', error);
+            // Fallback to localStorage
+            this.useFallbackStorage = true;
+            this.loadProfilesFromLocalStorage();
+            this.renderProfileList();
+            this.attachEventListeners();
+        }
     }
 
     attachEventListeners() {
@@ -70,16 +209,32 @@ class HSKTrainer {
 
     // ==================== PROFILE MANAGEMENT ====================
 
-    loadProfiles() {
+    async loadProfiles() {
+        if (this.useFallbackStorage) {
+            this.loadProfilesFromLocalStorage();
+            return;
+        }
+        const profiles = await this.db.getAll('profiles');
+        this.profiles = {};
+        profiles.forEach(p => this.profiles[p.name] = p);
+    }
+
+    loadProfilesFromLocalStorage() {
         const profiles = localStorage.getItem('hsk_profiles');
         this.profiles = profiles ? JSON.parse(profiles) : {};
     }
 
-    saveProfiles() {
-        localStorage.setItem('hsk_profiles', JSON.stringify(this.profiles));
+    async saveProfile(profile) {
+        if (this.useFallbackStorage) {
+            this.profiles[profile.name] = profile;
+            localStorage.setItem('hsk_profiles', JSON.stringify(this.profiles));
+            return;
+        }
+        await this.db.put('profiles', profile);
+        this.profiles[profile.name] = profile;
     }
 
-    createProfile() {
+    async createProfile() {
         const nameInput = document.getElementById('new-profile-name');
         const name = nameInput.value.trim();
 
@@ -93,39 +248,48 @@ class HSKTrainer {
             return;
         }
 
-        this.profiles[name] = {
+        const profile = {
             name: name,
             createdAt: Date.now(),
-            wordProgress: {}, // { wordId: { level: 0-5, nextReview: timestamp, correctCount, incorrectCount } }
             totalCorrect: 0,
             totalIncorrect: 0,
-            lastStudied: null
+            lastStudied: null,
+            streakDays: 0,
+            lastStreakDate: null
         };
 
-        this.saveProfiles();
+        await this.saveProfile(profile);
         this.renderProfileList();
         nameInput.value = '';
     }
 
-    deleteProfile(name) {
+    async deleteProfile(name) {
         if (confirm(`Are you sure you want to delete profile "${name}"?`)) {
-            delete this.profiles[name];
-            this.saveProfiles();
+            if (this.useFallbackStorage) {
+                delete this.profiles[name];
+                localStorage.setItem('hsk_profiles', JSON.stringify(this.profiles));
+            } else {
+                await this.db.delete('profiles', name);
+                delete this.profiles[name];
+            }
             this.renderProfileList();
         }
     }
 
-    selectProfile(name) {
+    async selectProfile(name) {
         this.currentProfile = this.profiles[name];
+        await this.loadWordProgress();
+        await this.checkAndUpdateDailyLog();
         this.showScreen('learning-screen');
         document.getElementById('current-user').textContent = name;
         this.updateStats();
-        this.loadNextCard();
+        await this.loadNextCard();
     }
 
     logout() {
         this.currentProfile = null;
         this.currentCard = null;
+        this.wordProgressCache.clear();
         this.showScreen('profile-screen');
     }
 
@@ -142,14 +306,12 @@ class HSKTrainer {
 
         profileNames.forEach(name => {
             const profile = this.profiles[name];
-            const learnedCount = Object.values(profile.wordProgress).filter(p => p.level >= 3).length;
-
             const profileItem = document.createElement('div');
             profileItem.className = 'profile-item';
             profileItem.innerHTML = `
                 <div>
                     <span class="profile-name">${name}</span>
-                    <span class="profile-stats">${learnedCount} / ${this.vocabulary.length} words learned</span>
+                    <span class="profile-stats">Streak: ${profile.streakDays || 0} days</span>
                 </div>
                 <button class="delete-profile" data-name="${name}">×</button>
             `;
@@ -169,90 +331,214 @@ class HSKTrainer {
         });
     }
 
-    // ==================== 2357 SPACED REPETITION ALGORITHM ====================
-    // Based on Kwik Learning principles and 2357 method
-    // Review intervals: 2 hours, 3 hours, 5 hours, 7 hours, then 2 days, 3 days, 5 days, 7 days
+    // ==================== WORD PROGRESS MANAGEMENT ====================
 
-    getReviewInterval(level) {
-        // Level 0: New word - immediate review
-        // Level 1: 2 hours
-        // Level 2: 3 hours
-        // Level 3: 5 hours
-        // Level 4: 7 hours
-        // Level 5: 2 days
-        // Level 6: 3 days
-        // Level 7: 5 days
-        // Level 8: 7 days
-        // Level 9+: 14 days (mastered)
+    async loadWordProgress() {
+        this.wordProgressCache.clear();
 
-        const intervals = [
-            0,                    // Level 0: immediate
-            2 * 60 * 60 * 1000,   // Level 1: 2 hours
-            3 * 60 * 60 * 1000,   // Level 2: 3 hours
-            5 * 60 * 60 * 1000,   // Level 3: 5 hours
-            7 * 60 * 60 * 1000,   // Level 4: 7 hours
-            2 * 24 * 60 * 60 * 1000, // Level 5: 2 days
-            3 * 24 * 60 * 60 * 1000, // Level 6: 3 days
-            5 * 24 * 60 * 60 * 1000, // Level 7: 5 days
-            7 * 24 * 60 * 60 * 1000, // Level 8: 7 days
-            14 * 24 * 60 * 60 * 1000 // Level 9+: 14 days
-        ];
+        if (this.useFallbackStorage) {
+            const stored = localStorage.getItem(`hsk_progress_${this.currentProfile.name}`);
+            if (stored) {
+                const data = JSON.parse(stored);
+                Object.entries(data).forEach(([wordId, progress]) => {
+                    this.wordProgressCache.set(parseInt(wordId), progress);
+                });
+            }
+            return;
+        }
 
-        return intervals[Math.min(level, intervals.length - 1)];
+        const progressList = await this.db.getByIndex('wordProgress', 'profileName', this.currentProfile.name);
+        progressList.forEach(p => {
+            this.wordProgressCache.set(p.wordId, p);
+        });
+    }
+
+    async saveWordProgress(wordId, progress) {
+        progress.profileName = this.currentProfile.name;
+        progress.wordId = wordId;
+        this.wordProgressCache.set(wordId, progress);
+
+        if (this.useFallbackStorage) {
+            const data = {};
+            this.wordProgressCache.forEach((v, k) => data[k] = v);
+            localStorage.setItem(`hsk_progress_${this.currentProfile.name}`, JSON.stringify(data));
+            return;
+        }
+
+        await this.db.put('wordProgress', progress);
     }
 
     getWordProgress(wordId) {
-        if (!this.currentProfile.wordProgress[wordId]) {
-            this.currentProfile.wordProgress[wordId] = {
+        if (!this.wordProgressCache.has(wordId)) {
+            return {
+                profileName: this.currentProfile.name,
+                wordId: wordId,
                 level: 0,
+                ease: 2.5, // SM-2 ease factor
+                interval: 0,
                 nextReview: Date.now(),
                 correctCount: 0,
                 incorrectCount: 0,
-                lastReviewed: null
+                successRate: 0,
+                lastReviewed: null,
+                firstSeen: null
             };
         }
-        return this.currentProfile.wordProgress[wordId];
+        return this.wordProgressCache.get(wordId);
     }
 
-    updateWordProgress(wordId, correct) {
+    // ==================== DAILY LOG & LIMITS ====================
+
+    getTodayKey() {
+        return new Date().toISOString().split('T')[0];
+    }
+
+    async checkAndUpdateDailyLog() {
+        const today = this.getTodayKey();
+
+        if (this.useFallbackStorage) {
+            const logKey = `hsk_daily_${this.currentProfile.name}`;
+            const stored = localStorage.getItem(logKey);
+            this.dailyLog = stored ? JSON.parse(stored) : {};
+
+            if (!this.dailyLog[today]) {
+                this.dailyLog[today] = { newCardsStudied: 0, reviewsDone: 0, date: today };
+            }
+            return;
+        }
+
+        const log = await this.db.get('dailyLog', [this.currentProfile.name, today]);
+        if (!log) {
+            this.dailyLog = {
+                profileName: this.currentProfile.name,
+                date: today,
+                newCardsStudied: 0,
+                reviewsDone: 0
+            };
+            await this.db.put('dailyLog', this.dailyLog);
+        } else {
+            this.dailyLog = log;
+        }
+
+        // Update streak
+        await this.updateStreak();
+    }
+
+    async updateStreak() {
+        const today = this.getTodayKey();
+        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
+        if (this.currentProfile.lastStreakDate === today) {
+            return; // Already updated today
+        }
+
+        if (this.currentProfile.lastStreakDate === yesterday) {
+            this.currentProfile.streakDays = (this.currentProfile.streakDays || 0) + 1;
+        } else if (this.currentProfile.lastStreakDate !== today) {
+            this.currentProfile.streakDays = 1;
+        }
+
+        this.currentProfile.lastStreakDate = today;
+        await this.saveProfile(this.currentProfile);
+    }
+
+    async saveDailyLog() {
+        if (this.useFallbackStorage) {
+            const logKey = `hsk_daily_${this.currentProfile.name}`;
+            const stored = localStorage.getItem(logKey);
+            const logs = stored ? JSON.parse(stored) : {};
+            logs[this.dailyLog.date] = this.dailyLog;
+            localStorage.setItem(logKey, JSON.stringify(logs));
+            return;
+        }
+        await this.db.put('dailyLog', this.dailyLog);
+    }
+
+    canStudyNewCard() {
+        const today = this.getTodayKey();
+        if (!this.dailyLog || this.dailyLog.date !== today) {
+            return true;
+        }
+        return this.dailyLog.newCardsStudied < this.NEW_CARDS_PER_DAY;
+    }
+
+    // ==================== ENHANCED SPACED REPETITION ====================
+    // Uses SM-2 algorithm with decay prevention and meta-learning principles
+
+    getReviewInterval(level, ease) {
+        // SM-2 inspired intervals with 2357 influence
+        const baseIntervals = [
+            0,                          // Level 0: immediate
+            10 * 60 * 1000,             // Level 1: 10 minutes
+            60 * 60 * 1000,             // Level 2: 1 hour
+            6 * 60 * 60 * 1000,         // Level 3: 6 hours
+            24 * 60 * 60 * 1000,        // Level 4: 1 day
+            2 * 24 * 60 * 60 * 1000,    // Level 5: 2 days
+            4 * 24 * 60 * 60 * 1000,    // Level 6: 4 days
+            7 * 24 * 60 * 60 * 1000,    // Level 7: 7 days
+            14 * 24 * 60 * 60 * 1000,   // Level 8: 14 days
+            30 * 24 * 60 * 60 * 1000,   // Level 9: 30 days
+            60 * 24 * 60 * 60 * 1000    // Level 10+: 60 days
+        ];
+
+        const baseInterval = baseIntervals[Math.min(level, baseIntervals.length - 1)];
+        return Math.round(baseInterval * ease);
+    }
+
+    async updateWordProgress(wordId, correct) {
         const progress = this.getWordProgress(wordId);
         const now = Date.now();
+
+        if (!progress.firstSeen) {
+            progress.firstSeen = now;
+        }
 
         if (correct) {
             progress.level = Math.min(progress.level + 1, 10);
             progress.correctCount++;
+            progress.ease = Math.min(progress.ease + 0.1, 3.0);
             this.currentProfile.totalCorrect++;
         } else {
-            // On incorrect, drop back 2 levels (but not below 0)
-            progress.level = Math.max(0, progress.level - 2);
+            // On incorrect, reduce level more gradually
+            progress.level = Math.max(0, progress.level - 1);
             progress.incorrectCount++;
+            progress.ease = Math.max(1.3, progress.ease - 0.2);
             this.currentProfile.totalIncorrect++;
         }
 
-        progress.nextReview = now + this.getReviewInterval(progress.level);
+        // Calculate success rate
+        const total = progress.correctCount + progress.incorrectCount;
+        progress.successRate = total > 0 ? progress.correctCount / total : 0;
+
+        // Calculate next review time
+        progress.interval = this.getReviewInterval(progress.level, progress.ease);
+        progress.nextReview = now + progress.interval;
         progress.lastReviewed = now;
+
         this.currentProfile.lastStudied = now;
 
-        this.saveProfiles();
+        await this.saveWordProgress(wordId, progress);
+        await this.saveProfile(this.currentProfile);
     }
 
     getDueCards() {
         const now = Date.now();
         const dueCards = [];
 
-        // First, add cards that are due for review
         this.vocabulary.forEach(word => {
-            const progress = this.currentProfile.wordProgress[word.id];
+            const progress = this.wordProgressCache.get(word.id);
             if (progress && progress.nextReview <= now) {
                 dueCards.push({
                     ...word,
                     progress: progress,
-                    priority: progress.level // Lower level = higher priority
+                    // Priority: lower success rate = higher priority (refresh struggling cards)
+                    priority: progress.successRate,
+                    isReview: true
                 });
             }
         });
 
-        // Sort by priority (lower level first, then by next review time)
+        // Sort by success rate (lowest first - these are the "worst performing" cards)
         dueCards.sort((a, b) => {
             if (a.priority !== b.priority) return a.priority - b.priority;
             return a.progress.nextReview - b.progress.nextReview;
@@ -261,48 +547,79 @@ class HSKTrainer {
         return dueCards;
     }
 
-    getNewCards(limit = 5) {
-        const newCards = [];
+    getWorstPerformingCards(limit = 10) {
+        const cardsWithProgress = [];
 
         this.vocabulary.forEach(word => {
-            if (!this.currentProfile.wordProgress[word.id]) {
-                newCards.push(word);
+            const progress = this.wordProgressCache.get(word.id);
+            if (progress && progress.incorrectCount > 0) {
+                cardsWithProgress.push({
+                    ...word,
+                    progress: progress,
+                    successRate: progress.successRate
+                });
             }
         });
 
-        // Shuffle and return limited number
-        return this.shuffle(newCards).slice(0, limit);
+        // Sort by success rate (lowest first)
+        cardsWithProgress.sort((a, b) => a.successRate - b.successRate);
+
+        return cardsWithProgress.slice(0, limit);
     }
 
-    shuffle(array) {
-        const shuffled = [...array];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    getNewCards(limit = 10) {
+        const newCards = [];
+
+        for (const word of this.vocabulary) {
+            if (!this.wordProgressCache.has(word.id)) {
+                newCards.push(word);
+                if (newCards.length >= limit) break;
+            }
         }
-        return shuffled;
+
+        return newCards;
     }
 
     // ==================== CARD DISPLAY & INTERACTION ====================
 
-    loadNextCard() {
-        // First try to get due cards
+    async loadNextCard() {
+        // Priority order:
+        // 1. Due review cards (especially worst performing)
+        // 2. New cards (up to daily limit)
+
         let dueCards = this.getDueCards();
 
         if (dueCards.length > 0) {
-            this.currentCard = dueCards[0];
-        } else {
-            // No due cards, introduce new cards
+            // Prioritize worst performing cards at start of session
+            const worstCards = dueCards.filter(c => c.progress.successRate < 0.5);
+            if (worstCards.length > 0) {
+                this.currentCard = worstCards[0];
+            } else {
+                this.currentCard = dueCards[0];
+            }
+            this.currentCard.isNew = false;
+        } else if (this.canStudyNewCard()) {
+            // Introduce new cards
             const newCards = this.getNewCards(1);
             if (newCards.length > 0) {
                 this.currentCard = newCards[0];
+                this.currentCard.isNew = true;
+
                 // Initialize progress for new card
-                this.getWordProgress(this.currentCard.id);
+                const progress = this.getWordProgress(this.currentCard.id);
+                progress.firstSeen = Date.now();
+                await this.saveWordProgress(this.currentCard.id, progress);
+
+                // Update daily log
+                this.dailyLog.newCardsStudied++;
+                await this.saveDailyLog();
             } else {
-                // All cards learned and none due!
                 this.showCompletionMessage();
                 return;
             }
+        } else {
+            this.showDailyLimitMessage();
+            return;
         }
 
         this.displayCard();
@@ -316,15 +633,12 @@ class HSKTrainer {
         const flashcard = document.getElementById('flashcard');
         flashcard.classList.remove('flipped');
 
-        // Randomly decide if showing Chinese or English first
-        // 70% chance to show Chinese (more practice recognizing characters)
+        // 70% chance to show Chinese first
         this.isInputMode = Math.random() < 0.3;
 
         const inputContainer = document.getElementById('input-container');
-        const cardContainer = document.querySelector('.card-container');
 
         if (this.isInputMode) {
-            // English to Mandarin mode - user must type
             flashcard.style.display = 'none';
             inputContainer.classList.remove('hidden');
             document.getElementById('english-prompt').textContent = this.currentCard.english;
@@ -332,27 +646,41 @@ class HSKTrainer {
             document.getElementById('answer-feedback').classList.add('hidden');
             document.getElementById('mandarin-input').focus();
         } else {
-            // Chinese to English mode - user clicks to flip
             flashcard.style.display = 'block';
             inputContainer.classList.add('hidden');
-
-            // Front side - Chinese character
             document.getElementById('card-character').textContent = this.currentCard.chinese;
             document.getElementById('card-pinyin').textContent = this.currentCard.pinyin;
             document.getElementById('card-pinyin').classList.add('hidden');
-
-            // Back side - English and details
             document.getElementById('card-english').textContent = this.currentCard.english;
             document.getElementById('card-pinyin-back').textContent = this.currentCard.pinyin;
             document.getElementById('card-chinese-back').textContent = this.currentCard.chinese;
         }
 
-        // Update stroke order iframe
+        // Show example sentence if available
+        this.displayExampleSentence();
+
+        // Update stroke order
         this.updateStrokeOrder();
 
-        // Hide sentences from previous card
+        // Hide generated sentences from previous card
         document.getElementById('sentences-container').classList.add('hidden');
-        document.getElementById('sentences-content').innerHTML = '';
+    }
+
+    displayExampleSentence() {
+        const container = document.getElementById('sentences-container');
+        const content = document.getElementById('sentences-content');
+
+        // Check if vocabulary has built-in example
+        if (this.currentCard.example) {
+            content.innerHTML = `
+                <div class="sentence-item">
+                    <div class="sentence-chinese">${this.currentCard.example.chinese}</div>
+                    <div class="sentence-pinyin">${this.currentCard.example.pinyin}</div>
+                    <div class="sentence-english">${this.currentCard.example.english}</div>
+                </div>
+            `;
+            container.classList.remove('hidden');
+        }
     }
 
     flipCard() {
@@ -380,7 +708,6 @@ class HSKTrainer {
             return;
         }
 
-        // Check if input matches (allow for some flexibility)
         const correct = input === this.currentCard.chinese;
 
         feedback.classList.remove('hidden');
@@ -391,16 +718,20 @@ class HSKTrainer {
             feedback.className = 'answer-feedback incorrect';
             feedback.innerHTML = `✗ The answer is: <br><strong>${this.currentCard.chinese}</strong> (${this.currentCard.pinyin})`;
         }
-
-        // Auto-mark based on input correctness
-        // User can still override with Yes/No buttons
     }
 
-    markAnswer(correct) {
+    async markAnswer(correct) {
         if (!this.currentCard) return;
 
-        this.updateWordProgress(this.currentCard.id, correct);
-        this.loadNextCard();
+        await this.updateWordProgress(this.currentCard.id, correct);
+
+        // Update daily review count
+        if (this.dailyLog) {
+            this.dailyLog.reviewsDone++;
+            await this.saveDailyLog();
+        }
+
+        await this.loadNextCard();
     }
 
     showCompletionMessage() {
@@ -408,13 +739,35 @@ class HSKTrainer {
         document.getElementById('flashcard').style.display = 'none';
         document.getElementById('input-container').classList.add('hidden');
 
+        const learnedCount = Array.from(this.wordProgressCache.values()).filter(p => p.level >= 3).length;
+
         cardContainer.innerHTML = `
             <div class="no-cards-message">
-                <h3>Congratulations!</h3>
-                <p>You've reviewed all due cards and learned all available vocabulary.</p>
-                <p>Come back later for more review sessions!</p>
+                <h3>🎉 Great job!</h3>
+                <p>You've completed all due reviews and reached today's new card limit.</p>
+                <p>Come back tomorrow for more learning!</p>
                 <p style="margin-top: 1rem; color: var(--red);">
-                    Total learned: ${Object.values(this.currentProfile.wordProgress).filter(p => p.level >= 3).length} / ${this.vocabulary.length}
+                    Total mastered: ${learnedCount} / ${this.vocabulary.length}
+                </p>
+                <p style="margin-top: 0.5rem; color: var(--light-gray);">
+                    Streak: ${this.currentProfile.streakDays || 1} days 🔥
+                </p>
+            </div>
+        `;
+    }
+
+    showDailyLimitMessage() {
+        const cardContainer = document.querySelector('.card-container');
+        document.getElementById('flashcard').style.display = 'none';
+        document.getElementById('input-container').classList.add('hidden');
+
+        cardContainer.innerHTML = `
+            <div class="no-cards-message">
+                <h3>Daily Limit Reached</h3>
+                <p>You've studied ${this.NEW_CARDS_PER_DAY} new cards today!</p>
+                <p>This limit helps prevent cognitive overload and improves long-term retention.</p>
+                <p style="margin-top: 1rem; color: var(--light-gray);">
+                    Come back tomorrow for more new cards, or wait for reviews to become due.
                 </p>
             </div>
         `;
@@ -425,32 +778,26 @@ class HSKTrainer {
     updateStrokeOrder() {
         if (!this.currentCard) return;
 
-        // Clean up previous Hanzi Writer instances
         this.cleanupHanziWriters();
 
         const container = document.getElementById('hanzi-writer-container');
         container.innerHTML = '';
         container.classList.remove('quiz-active');
 
-        // Reset quiz mode
         this.isQuizMode = false;
         document.getElementById('quiz-mode-btn').textContent = 'Quiz Mode';
 
         const characters = this.currentCard.chinese.split('');
 
-        // Create a Hanzi Writer instance for each character
         characters.forEach((char, index) => {
-            // Create wrapper element
             const wrapper = document.createElement('div');
             wrapper.className = 'hanzi-char-wrapper';
             wrapper.id = `hanzi-wrapper-${index}`;
 
-            // Create the target div for Hanzi Writer
             const target = document.createElement('div');
             target.id = `hanzi-target-${index}`;
             wrapper.appendChild(target);
 
-            // Create label
             const label = document.createElement('div');
             label.className = 'hanzi-char-label';
             label.textContent = `${index + 1}/${characters.length}`;
@@ -458,7 +805,6 @@ class HSKTrainer {
 
             container.appendChild(wrapper);
 
-            // Create Hanzi Writer instance
             try {
                 const writer = HanziWriter.create(`hanzi-target-${index}`, char, {
                     width: 150,
@@ -466,7 +812,7 @@ class HSKTrainer {
                     padding: 5,
                     showOutline: true,
                     showCharacter: true,
-                    strokeColor: '#dc2626', // Red stroke color
+                    strokeColor: '#dc2626',
                     outlineColor: '#ddd',
                     drawingColor: '#333',
                     radicalColor: '#dc2626',
@@ -475,25 +821,16 @@ class HSKTrainer {
                     delayBetweenStrokes: 300,
                     charDataLoader: (char, onComplete) => {
                         fetch(`https://cdn.jsdelivr.net/npm/hanzi-writer-data@2.0/${char}.json`)
-                            .then(response => {
-                                if (!response.ok) {
-                                    throw new Error('Character not found');
-                                }
-                                return response.json();
-                            })
+                            .then(response => response.ok ? response.json() : Promise.reject())
                             .then(data => onComplete(data))
-                            .catch(err => {
-                                console.warn(`Could not load character data for: ${char}`, err);
-                                // Show fallback
+                            .catch(() => {
                                 target.innerHTML = `<div style="width:150px;height:150px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:8px;font-size:4rem;">${char}</div>`;
                             });
                     }
                 });
 
-                // Store reference
                 this.hanziWriters.push({ writer, char, index });
 
-                // Click to animate individual character
                 target.addEventListener('click', () => {
                     if (!this.isQuizMode) {
                         writer.animateCharacter();
@@ -501,21 +838,17 @@ class HSKTrainer {
                 });
 
             } catch (err) {
-                console.warn(`Could not create HanziWriter for: ${char}`, err);
                 target.innerHTML = `<div style="width:150px;height:150px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:8px;font-size:4rem;">${char}</div>`;
             }
         });
     }
 
     cleanupHanziWriters() {
-        // Clean up previous instances
         this.hanziWriters.forEach(({ writer }) => {
             try {
                 writer.cancelQuiz();
                 writer.hideCharacter();
-            } catch (e) {
-                // Ignore cleanup errors
-            }
+            } catch (e) {}
         });
         this.hanziWriters = [];
     }
@@ -523,17 +856,12 @@ class HSKTrainer {
     animateAllCharacters() {
         if (this.hanziWriters.length === 0) return;
 
-        // Animate characters sequentially
         let delay = 0;
-        this.hanziWriters.forEach(({ writer }, index) => {
+        this.hanziWriters.forEach(({ writer }) => {
             setTimeout(() => {
-                try {
-                    writer.animateCharacter();
-                } catch (e) {
-                    console.warn('Could not animate character', e);
-                }
+                try { writer.animateCharacter(); } catch (e) {}
             }, delay);
-            delay += 1500; // 1.5 second delay between characters
+            delay += 1500;
         });
     }
 
@@ -556,24 +884,20 @@ class HSKTrainer {
                     writer.cancelQuiz();
                     writer.showCharacter();
                     writer.showOutline();
-                } catch (e) {
-                    // Ignore errors
-                }
+                } catch (e) {}
             });
         }
     }
 
     startQuiz() {
-        // Start quiz for the first character, then chain to next
         this.runQuizForCharacter(0);
     }
 
     runQuizForCharacter(index) {
         if (index >= this.hanziWriters.length || !this.isQuizMode) return;
 
-        const { writer, char } = this.hanziWriters[index];
+        const { writer } = this.hanziWriters[index];
 
-        // Highlight current character label
         document.querySelectorAll('.hanzi-char-label').forEach((label, i) => {
             label.classList.toggle('active', i === index);
         });
@@ -582,25 +906,31 @@ class HSKTrainer {
             writer.quiz({
                 showHintAfterMisses: 3,
                 highlightOnComplete: true,
-                onComplete: (summaryData) => {
-                    // Move to next character after a short delay
-                    setTimeout(() => {
-                        this.runQuizForCharacter(index + 1);
-                    }, 500);
+                onComplete: () => {
+                    setTimeout(() => this.runQuizForCharacter(index + 1), 500);
                 }
             });
         } catch (e) {
-            console.warn('Could not start quiz for character', e);
-            // Try next character
             this.runQuizForCharacter(index + 1);
         }
     }
 
-    // ==================== CLAUDE API INTEGRATION ====================
+    // ══════════════════════════════════════════════════════════════════════════
+    // ║                    CLAUDE API INTEGRATION                              ║
+    // ║                                                                        ║
+    // ║  API Key is stored at: localStorage.getItem('claude_api_key')          ║
+    // ║  API Key is used in the fetch() call below (line ~780)                 ║
+    // ║                                                                        ║
+    // ║  To set API key: localStorage.setItem('claude_api_key', 'your-key')    ║
+    // ║  Or use the modal that appears when clicking "Generate Sentences"      ║
+    // ══════════════════════════════════════════════════════════════════════════
 
     async generateSentences() {
         if (!this.currentCard) return;
 
+        // ════════════════════════════════════════════════════════════════
+        // API KEY CHECK - Retrieved from localStorage
+        // ════════════════════════════════════════════════════════════════
         if (!this.apiKey) {
             this.showApiKeyModal();
             return;
@@ -614,98 +944,71 @@ class HSKTrainer {
         btn.innerHTML = '<span class="loading"></span> Generating...';
 
         try {
-            const requestBody = {
-                model: 'claude-3-haiku-20240307',
-                max_tokens: 1024,
-                messages: [{
-                    role: 'user',
-                    content: `Generate exactly 3 simple example sentences using the Chinese word "${this.currentCard.chinese}" (${this.currentCard.pinyin}, meaning: ${this.currentCard.english}).
-
-The sentences should be appropriate for HSK 3.0 Level 1 learners (beginner level). Keep vocabulary simple.
-
-Format your response EXACTLY like this (use this exact structure):
-1. [Chinese sentence]
-[Pinyin with tone marks]
-[English translation]
-
-2. [Chinese sentence]
-[Pinyin with tone marks]
-[English translation]
-
-3. [Chinese sentence]
-[Pinyin with tone marks]
-[English translation]
-
-Do not add any other text, explanations, or formatting.`
-                }]
-            };
-
+            // ════════════════════════════════════════════════════════════════
+            // API REQUEST - Using the stored API key
+            // Model: claude-3-haiku-20240307 (fast and cost-effective)
+            // ════════════════════════════════════════════════════════════════
             const response = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'x-api-key': this.apiKey,
+                    'x-api-key': this.apiKey,  // ← API KEY USED HERE
                     'anthropic-version': '2023-06-01',
                     'anthropic-dangerous-direct-browser-access': 'true'
                 },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify({
+                    model: 'claude-3-haiku-20240307',
+                    max_tokens: 1024,
+                    messages: [{
+                        role: 'user',
+                        content: `Generate 3 simple example sentences using the Chinese word "${this.currentCard.chinese}" (${this.currentCard.pinyin}, meaning: ${this.currentCard.english}).
+
+Sentences should be HSK 1 level (beginner). Format exactly as:
+
+1. [Chinese]
+[Pinyin]
+[English]
+
+2. [Chinese]
+[Pinyin]
+[English]
+
+3. [Chinese]
+[Pinyin]
+[English]`
+                    }]
+                })
             });
 
-            // Get response text for error details
-            const responseText = await response.text();
-            let data;
-
-            try {
-                data = JSON.parse(responseText);
-            } catch (e) {
-                throw new Error(`Invalid JSON response: ${responseText.substring(0, 300)}`);
-            }
+            const data = await response.json();
 
             if (!response.ok) {
-                const errorType = data.error?.type || 'unknown';
-                const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
-                throw new Error(`${errorType}: ${errorMsg}`);
+                const errorMsg = data.error?.message || `HTTP ${response.status}`;
+                throw new Error(errorMsg);
             }
 
-            if (!data.content || !data.content[0] || !data.content[0].text) {
-                throw new Error('Unexpected API response format');
+            if (data.content?.[0]?.text) {
+                const sentences = this.parseSentences(data.content[0].text);
+                this.displaySentences(sentences);
+            } else {
+                throw new Error('Unexpected response format');
             }
-
-            const text = data.content[0].text;
-
-            // Parse and display sentences
-            const sentences = this.parseSentences(text);
-            this.displaySentences(sentences);
 
         } catch (error) {
-            console.error('Error generating sentences:', error);
+            console.error('API Error:', error);
 
-            let errorHtml = `<div class="api-error">
-                <div class="api-error-title">Error generating sentences</div>
-                <div class="api-error-details">`;
-
-            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                errorHtml += `<p><strong>CORS Error:</strong> Browser security is blocking the API request.</p>
-                <p>To use this feature, you need to:</p>
-                <ol style="margin-left: 1.5rem; margin-top: 0.5rem;">
-                    <li>Enable browser access on your API key at <a href="https://console.anthropic.com/" target="_blank" style="color: var(--red);">console.anthropic.com</a></li>
-                    <li>Or run this app through a local server with a backend proxy</li>
-                </ol>`;
-            } else if (error.message.includes('401') || error.message.includes('authentication')) {
-                errorHtml += `<p><strong>Authentication Error:</strong> Your API key appears to be invalid.</p>
-                <p>Please check that you've entered the correct API key.</p>`;
-            } else if (error.message.includes('403')) {
-                errorHtml += `<p><strong>Access Denied:</strong> Your API key doesn't have browser access enabled.</p>
-                <p>Go to <a href="https://console.anthropic.com/" target="_blank" style="color: var(--red);">console.anthropic.com</a> and enable "Allow browser access" for your API key.</p>`;
-            } else if (error.message.includes('429')) {
-                errorHtml += `<p><strong>Rate Limited:</strong> Too many requests. Please wait a moment and try again.</p>`;
-            } else {
-                errorHtml += `<p>${error.message}</p>`;
-            }
-
-            errorHtml += `</div></div>`;
-
-            content.innerHTML = errorHtml;
+            content.innerHTML = `
+                <div class="api-error">
+                    <div class="api-error-title">Error generating sentences</div>
+                    <div class="api-error-details">
+                        <p>${error.message}</p>
+                        <p style="margin-top: 0.5rem; font-size: 0.8rem;">
+                            Make sure your API key has browser access enabled at
+                            <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color: var(--red);">console.anthropic.com</a>
+                        </p>
+                    </div>
+                </div>
+            `;
             container.classList.remove('hidden');
         } finally {
             btn.disabled = false;
@@ -716,22 +1019,14 @@ Do not add any other text, explanations, or formatting.`
     parseSentences(text) {
         const sentences = [];
         const lines = text.trim().split('\n').filter(line => line.trim());
-
         let currentSentence = {};
-        let lineIndex = 0;
 
         for (const line of lines) {
-            const trimmedLine = line.trim();
-
-            // Skip numbered prefixes
-            const cleanLine = trimmedLine.replace(/^\d+\.\s*/, '');
-
+            const cleanLine = line.trim().replace(/^\d+\.\s*/, '');
             if (!cleanLine) continue;
 
-            // Detect if line contains Chinese characters
             const hasChinese = /[\u4e00-\u9fff]/.test(cleanLine);
-            // Detect if line contains pinyin tone marks
-            const hasPinyin = /[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/.test(cleanLine.toLowerCase());
+            const hasPinyin = /[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/.test(cleanLine);
 
             if (hasChinese && !currentSentence.chinese) {
                 currentSentence.chinese = cleanLine;
@@ -744,7 +1039,6 @@ Do not add any other text, explanations, or formatting.`
             }
         }
 
-        // Handle last sentence if not pushed
         if (currentSentence.chinese && currentSentence.english) {
             sentences.push(currentSentence);
         }
@@ -784,6 +1078,9 @@ Do not add any other text, explanations, or formatting.`
     saveApiKey() {
         const key = document.getElementById('api-key-input').value.trim();
         this.apiKey = key;
+        // ════════════════════════════════════════════════════════════════
+        // API KEY STORAGE - Saved to localStorage
+        // ════════════════════════════════════════════════════════════════
         localStorage.setItem('claude_api_key', key);
         this.hideApiKeyModal();
 
@@ -797,7 +1094,7 @@ Do not add any other text, explanations, or formatting.`
     updateStats() {
         if (!this.currentProfile) return;
 
-        const learned = Object.values(this.currentProfile.wordProgress).filter(p => p.level >= 3).length;
+        const learned = Array.from(this.wordProgressCache.values()).filter(p => p.level >= 3).length;
         const due = this.getDueCards().length;
         const total = this.vocabulary.length;
 
@@ -805,7 +1102,6 @@ Do not add any other text, explanations, or formatting.`
         document.getElementById('due-count').textContent = due;
         document.getElementById('total-count').textContent = total;
 
-        // Update progress bar
         const progress = (learned / total) * 100;
         document.getElementById('progress-fill').style.width = `${progress}%`;
         document.getElementById('progress-text').textContent = `${progress.toFixed(1)}% Complete`;
